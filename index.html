@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor de Tareas & Analítica</title>
+    <link rel="manifest" href="manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2098/2098402.png">
+    <style>
+        .bg-custom-gradient {
+            background: linear-gradient(135deg, #0f172a 0%, #083344 100%);
+        }
+
+        .status-pendiente {
+            color: #facc15;
+            border-color: #facc15;
+        }
+
+        .status-finalizado {
+            color: #4ade80;
+            border-color: #4ade80;
+        }
+
+        .status-retrasado {
+            color: #f87171;
+            border-color: #f87171;
+        }
+
+        .status-no-iniciado {
+            color: #94a3b8;
+            border-color: #94a3b8;
+        }
+    </style>
+</head>
+
+<body class="bg-custom-gradient text-slate-100 min-h-screen p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-8 flex flex-col md:flex-row justify-between items-end gap-4">
+            <div>
+                <h1
+                    class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-500">
+                    Panel de Control</h1>
+                <p id="current-clock" class="text-cyan-200 font-mono mt-1">Cargando...</p>
+            </div>
+            <div id="db-status"
+                class="text-xs bg-slate-800/80 px-4 py-2 rounded-full border border-cyan-900/50 text-cyan-400">DB:
+                Conectando...</div>
+        </header>
+
+        <div class="bg-slate-900/70 p-6 rounded-2xl border border-slate-700/50 mb-8 backdrop-blur-xl">
+            <form id="todo-form" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="md:col-span-2">
+                    <label class="block text-xs font-bold mb-2 text-cyan-500 uppercase">Tarea *</label>
+                    <input type="text" id="task-name" placeholder="Ej. Desarrollo de API"
+                        class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-cyan-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold mb-2 text-cyan-500 uppercase">Inicio *</label>
+                    <input type="time" id="start-time"
+                        class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-cyan-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold mb-2 text-cyan-500 uppercase">Fin (Opcional)</label>
+                    <input type="time" id="end-time"
+                        class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-2 outline-none focus:ring-2 focus:ring-cyan-500">
+                </div>
+                <button type="submit"
+                    class="md:col-span-4 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg uppercase tracking-widest">Registrar
+                    Actividad</button>
+            </form>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div
+                class="lg:col-span-2 bg-slate-900/40 rounded-2xl border border-slate-700/50 overflow-hidden shadow-2xl">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-800/50 text-cyan-400">
+                            <tr>
+                                <th class="p-4 text-xs font-bold uppercase">Tarea</th>
+                                <th class="p-4 text-xs font-bold uppercase">Horario</th>
+                                <th class="p-4 text-xs font-bold uppercase">Estado</th>
+                                <th class="p-4 text-xs font-bold uppercase text-right">Borrar</th>
+                            </tr>
+                        </thead>
+                        <tbody id="task-list" class="divide-y divide-slate-800 text-sm"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="bg-slate-900/60 p-6 rounded-2xl border border-slate-700/50 shadow-2xl">
+                <h2 class="text-cyan-400 font-bold mb-4 uppercase text-center tracking-tighter">Tiempo Invertido
+                    (Minutos)</h2>
+                <div class="relative h-[300px]">
+                    <canvas id="timeChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-container" class="fixed bottom-5 right-5"></div>
+
+    <script>
+        let db;
+        let myChart;
+        const config = { locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}` };
+
+        // Inicializar Reloj
+        setInterval(() => {
+            const now = new Date();
+            document.getElementById('current-clock').innerText = `Hoy: ${now.toLocaleTimeString('es-MX')}`;
+            checkAlarms(now.getHours().toString().padStart(2, '0') + ":" + now.getMinutes().toString().padStart(2, '0'));
+        }, 1000);
+
+        async function initDB() {
+            const SQL = await initSqlJs(config);
+            const savedData = localStorage.getItem("todo_db_v4");
+            db = savedData ? new SQL.Database(new Uint8Array(JSON.parse(savedData))) : new SQL.Database();
+            if (!savedData) db.run("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, start TEXT, end TEXT, status TEXT)");
+            document.getElementById('db-status').innerText = "DB: Activa (SQL.js)";
+            renderUI();
+        }
+
+        function renderUI() {
+            renderTasks();
+            updateChart();
+        }
+        // Variable global para rastrear qué fila se está editando
+        let editingId = null;
+
+        function renderTasks() {
+            const tbody = document.getElementById('task-list');
+            tbody.innerHTML = '';
+            const res = db.exec("SELECT * FROM tasks ORDER BY start ASC");
+
+            if (res.length > 0) {
+                res[0].values.forEach(row => {
+                    const [id, name, start, end, status] = row;
+                    const statusClass = getStatusClass(status);
+                    const isEditing = editingId === id;
+
+                    const tr = document.createElement('tr');
+                    tr.className = "hover:bg-cyan-900/10 border-b border-slate-800/50 transition-colors";
+
+                    tr.innerHTML = `
+                <td class="p-4 font-bold text-slate-200">${name}</td>
+                <td class="p-4">
+                    <div class="flex flex-col gap-1">
+                        <span class="text-cyan-400 font-mono text-xs uppercase">Inicio: ${start}</span>
+                        ${isEditing
+                            ? `<input type="time" id="edit-end-${id}" value="${end || ''}" 
+                                class="bg-slate-800 border border-cyan-500 rounded text-xs p-1 text-white outline-none">`
+                            : `<span class="text-slate-400 font-mono text-xs uppercase">
+                                Fin: ${end || '<span class="text-slate-600 italic">Pendiente</span>'}
+                               </span>`
+                        }
+                    </div>
+                </td>
+                <td class="p-4">
+                    <select onchange="updateStatus(${id}, this.value)" 
+                            class="bg-slate-900 border-2 rounded-lg px-2 py-1 text-[10px] font-black outline-none ${statusClass}">
+                        <option value="Pendiente" ${status === 'Pendiente' ? 'selected' : ''}>PENDIENTE</option>
+                        <option value="No Iniciado" ${status === 'No Iniciado' ? 'selected' : ''}>NO INICIADO</option>
+                        <option value="Finalizado" ${status === 'Finalizado' ? 'selected' : ''}>FINALIZADO</option>
+                        <option value="Retrasado" ${status === 'Retrasado' ? 'selected' : ''}>RETRASADO</option>
+                    </select>
+                </td>
+                <td class="p-4 text-right">
+                    <div class="flex justify-end gap-3">
+                        ${isEditing
+                            ? `<button onclick="saveEdit(${id})" class="text-green-400 hover:text-green-300 font-bold text-xs uppercase">Guardar</button>
+                               <button onclick="cancelEdit()" class="text-slate-500 text-xs uppercase">X</button>`
+                            : `<button onclick="startEdit(${id})" class="text-cyan-500 hover:text-cyan-300 transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                               </button>
+                               <button onclick="deleteTask(${id})" class="text-slate-600 hover:text-red-500 transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                               </button>`
+                        }
+                    </div>
+                </td>
+            `;
+                    tbody.appendChild(tr);
+                });
+            }
+        }
+
+        // Funciones de control para la edición
+        function startEdit(id) {
+            editingId = id;
+            renderUI();
+        }
+
+        function cancelEdit() {
+            editingId = null;
+            renderUI();
+        }
+
+        function saveEdit(id) {
+            const newEnd = document.getElementById(`edit-end-${id}`).value;
+
+            // Actualizar la base de datos
+            db.run("UPDATE tasks SET end = ? WHERE id = ?", [newEnd, id]);
+
+            // Si se pone una hora de fin, podrías querer marcarla como Finalizada automáticamente (opcional)
+            // db.run("UPDATE tasks SET status = 'Finalizado' WHERE id = ?", [id]);
+
+            saveDB();
+            editingId = null; // Salir del modo edición
+            renderUI(); // Esto actualizará la tabla y el GRÁFICO automáticamente
+            showToast("Hora de fin actualizada", "success");
+        }
+        function updateChart() {
+            const res = db.exec("SELECT name, start, end FROM tasks WHERE end IS NOT NULL AND end != ''");
+            const labels = [];
+            const durations = [];
+
+            if (res.length > 0) {
+                res[0].values.forEach(row => {
+                    const [name, start, end] = row;
+                    const diff = calculateMinutes(start, end);
+                    if (diff > 0) {
+                        labels.push(name);
+                        durations.push(diff);
+                    }
+                });
+            }
+
+            const ctx = document.getElementById('timeChart').getContext('2d');
+            if (myChart) myChart.destroy();
+
+            myChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Minutos',
+                        data: durations,
+                        backgroundColor: '#06b6d4',
+                        borderColor: '#22d3ee',
+                        borderWidth: 1,
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
+                        x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function calculateMinutes(start, end) {
+            const [h1, m1] = start.split(':').map(Number);
+            const [h2, m2] = end.split(':').map(Number);
+            return (h2 * 60 + m2) - (h1 * 60 + m1);
+        }
+
+        function getStatusClass(status) {
+            switch (status) {
+                case 'Pendiente': return 'status-pendiente';
+                case 'Finalizado': return 'status-finalizado';
+                case 'Retrasado': return 'status-retrasado';
+                default: return 'status-no-iniciado';
+            }
+        }
+
+        function checkAlarms(currentTime) {
+            const res = db.exec(`SELECT name FROM tasks WHERE start = '${currentTime}' AND status != 'Finalizado'`);
+            if (res.length > 0) {
+                res[0].values.forEach(row => {
+                    if (Notification.permission === "granted") {
+                        new Notification("¡Tiempo de trabajar!", { body: `Inicia: ${row[0]}` });
+                    }
+                });
+            }
+        }
+
+        document.getElementById('todo-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const name = document.getElementById('task-name').value;
+            const start = document.getElementById('start-time').value;
+            const end = document.getElementById('end-time').value;
+
+            if (!name || !start) return alert("Nombre e Inicio son obligatorios");
+
+            db.run("INSERT INTO tasks (name, start, end, status) VALUES (?, ?, ?, ?)", [name, start, end, 'No Iniciado']);
+            saveDB();
+            renderUI();
+            e.target.reset();
+        });
+
+        function saveDB() {
+            localStorage.setItem("todo_db_v4", JSON.stringify(Array.from(db.export())));
+        }
+
+        function updateStatus(id, status) {
+            db.run("UPDATE tasks SET status = ? WHERE id = ?", [status, id]);
+            saveDB();
+            renderUI();
+        }
+
+        function deleteTask(id) {
+            db.run("DELETE FROM tasks WHERE id = ?", [id]);
+            saveDB();
+            renderUI();
+        }
+
+
+        if (Notification.permission !== "denied") Notification.requestPermission();
+
+        // Registro del Service Worker para PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('PWA: Service Worker registrado'))
+                    .catch(err => console.log('PWA: Error al registrar', err));
+            });
+        }
+        initDB();
+    </script>
+</body>
+
+</html>
